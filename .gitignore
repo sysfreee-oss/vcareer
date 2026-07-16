@@ -1,0 +1,12 @@
+# 依存・ビルド
+node_modules/
+*.log
+
+# clasp 認証情報(絶対にコミットしない)
+.clasprc.json
+~/.clasprc.json
+
+# 一時ファイル
+*.tmp
+*.pdf
+.DS_Store
