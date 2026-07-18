@@ -7,15 +7,15 @@
     body{font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif;background:#f5f6f8;margin:0;color:#222}
     .wrap{max-width:640px;margin:0 auto;padding:24px 16px}
     .card{background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
-    h1{font-size:20px;margin:0 0 8px}
+    h1{font-size:20px;margin:0 0 4px}
     p{line-height:1.7}
     .muted{color:#666;font-size:13px}
+    .signed{font-size:12px;color:#188038;margin:0 0 12px}
     .err{background:#fdecec;color:#b3261e;padding:10px 12px;border-radius:8px;margin:12px 0;font-size:14px}
-    label{display:block;margin:12px 0 4px;font-weight:600;font-size:14px}
-    input[type=text]{width:100%;padding:12px;font-size:18px;letter-spacing:.2em;border:1px solid #ccc;border-radius:8px;box-sizing:border-box}
-    .contract{white-space:pre-wrap;border:1px solid #e0e0e0;border-radius:8px;padding:16px;max-height:340px;overflow:auto;background:#fafafa;font-size:14px;line-height:1.7}
-    .agree{display:flex;align-items:flex-start;gap:8px;margin:16px 0;font-size:14px}
-    button{width:100%;padding:14px;font-size:16px;font-weight:700;color:#fff;background:#1a73e8;border:0;border-radius:8px;cursor:pointer}
+    label{display:block;margin:14px 0 4px;font-weight:600;font-size:14px}
+    input[type=text],input[type=email]{width:100%;padding:11px;font-size:15px;border:1px solid #ccc;border-radius:8px;box-sizing:border-box}
+    .agree{display:flex;align-items:flex-start;gap:8px;margin:18px 0;font-size:14px}
+    button{width:100%;padding:14px;font-size:16px;font-weight:700;color:#fff;background:#1a73e8;border:0;border-radius:8px;cursor:pointer;margin-top:6px}
     button:hover{background:#1666cf}
     .note{font-size:12px;color:#888;margin-top:16px}
   </style>
@@ -24,52 +24,35 @@
   <div class="wrap">
     <div class="card">
       <h1>契約書 電子署名</h1>
-
-      <? if (data.error) { ?>
-        <div class="err"><?= data.error ?></div>
+      <? if (data.signerEmail) { ?>
+        <p class="signed">✓ <?= data.signerEmail ?> でサインイン中</p>
+      <? } else { ?>
+        <p class="muted">Googleアカウントでサインインした状態でご利用ください。</p>
       <? } ?>
 
-      <? if (step === 'otp_request') { ?>
-        <p><?= data.name ?> 様<br>契約内容のご確認と電子署名のお手続きです。</p>
-        <p class="muted">まず、ご登録メールアドレス（<?= data.email ?>）宛に確認コードを送信します。</p>
-        <form method="post" action="<?= actionUrl ?>">
-          <input type="hidden" name="token" value="<?= token ?>">
-          <input type="hidden" name="action" value="requestOtp">
-          <button type="submit">確認コードを送信する</button>
-        </form>
+      <? if (data.error) { ?><div class="err"><?= data.error ?></div><? } ?>
 
-      <? } else if (step === 'otp_input') { ?>
-        <p class="muted"><?= data.email ?> 宛に6桁の確認コードを送信しました（有効期限10分）。</p>
-        <form method="post" action="<?= actionUrl ?>">
-          <input type="hidden" name="token" value="<?= token ?>">
-          <input type="hidden" name="action" value="verifyOtp">
-          <label for="otp">確認コード（6桁）</label>
-          <input type="text" id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
-          <div style="height:14px"></div>
-          <button type="submit">コードを確認する</button>
-        </form>
-        <form method="post" action="<?= actionUrl ?>" style="margin-top:10px">
-          <input type="hidden" name="token" value="<?= token ?>">
-          <input type="hidden" name="action" value="requestOtp">
-          <button type="submit" style="background:#eee;color:#333">コードを再送する</button>
-        </form>
+      <form method="post" action="<?= actionUrl ?>">
+        <input type="hidden" name="action" value="sign">
 
-      <? } else if (step === 'consent') { ?>
-        <p class="muted">本人確認が完了しました。以下の契約内容をご確認のうえ、同意して署名してください。</p>
-        <div class="contract"><?= data.contractText ?></div>
-        <form method="post" action="<?= actionUrl ?>" onsubmit="document.getElementById('ua').value=navigator.userAgent">
-          <input type="hidden" name="token" value="<?= token ?>">
-          <input type="hidden" name="action" value="sign">
-          <input type="hidden" id="ua" name="ua" value="">
-          <div class="agree">
-            <input type="checkbox" id="agree" name="agree" required>
-            <label for="agree" style="margin:0;font-weight:400">上記の契約内容を確認し、これに同意して電子署名します。</label>
-          </div>
-          <button type="submit">同意して署名する</button>
-        </form>
-        <p class="note">署名すると、締結日時・文書ハッシュ（SHA-256）・本人確認記録が監査証跡として保存されます。</p>
-      <? } ?>
+        <label for="docUrl">契約書ドキュメントのURL</label>
+        <input type="text" id="docUrl" name="docUrl" value="<?= data.docUrl ?>" placeholder="https://docs.google.com/document/d/..." required>
 
+        <label for="name">お名前</label>
+        <input type="text" id="name" name="name" value="<?= data.name ? data.name : '' ?>" required>
+
+        <label for="email">メールアドレス（署名済PDFの送付先）</label>
+        <input type="email" id="email" name="email" value="<?= data.signerEmail ?>" required>
+
+        <div class="agree">
+          <input type="checkbox" id="agree" name="agree">
+          <label for="agree" style="margin:0;font-weight:400">上記ドキュメントの契約内容を確認し、これに同意して電子署名します。</label>
+        </div>
+
+        <button type="submit">同意して署名する</button>
+      </form>
+
+      <p class="note">署名すると、締結日時・文書ハッシュ（SHA-256）・本人確認記録を付与した署名済PDFを、発行者とあなたの双方へメールで送信します。</p>
     </div>
   </div>
 </body>
