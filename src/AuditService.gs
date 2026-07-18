@@ -1,34 +1,28 @@
 /**
  * AuditService.gs
- * 監査証跡(誰が・いつ・どこから・何をしたか)を追記専用シートへ記録する。
- * このシートは運用上「追記のみ」とし、編集権限を限定して保全する。
+ * 監査証跡の記録。AUDIT_SHEET_ID が設定されていればスプレッドシートへ追記する(任意)。
+ * 未設定時は console のみ。
  */
 var AuditService = (function () {
-  function sheet() {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sh = ss.getSheetByName(CONFIG.SHEET_AUDIT);
-    if (!sh) {
-      sh = ss.insertSheet(CONFIG.SHEET_AUDIT);
-      sh.appendRow(['日時', '行', 'イベント', 'メール', 'IP', 'UA', '結果', '文書ハッシュ', '締結証明書番号']);
-    }
-    return sh;
-  }
-
-  /**
-   * @param {number} rowIndex 対象行
-   * @param {Object} ev {event, email, ip, ua, result, docHash, certNo}
-   */
-  function record(rowIndex, ev) {
+  function record(ev) {
     ev = ev || {};
+    Log.info('AUDIT', ev);
+    var id = Props.get('AUDIT_SHEET_ID', '');
+    if (!id) return;
     try {
-      sheet().appendRow([
-        new Date(), rowIndex, ev.event || '', ev.email || '',
-        ev.ip || '', ev.ua || '', ev.result || '', ev.docHash || '', ev.certNo || ''
+      var ss = SpreadsheetApp.openById(id);
+      var sh = ss.getSheetByName(CONFIG.AUDIT_SHEET_NAME);
+      if (!sh) {
+        sh = ss.insertSheet(CONFIG.AUDIT_SHEET_NAME);
+        sh.appendRow(['日時', 'イベント', '署名者メール', '氏名', 'ドキュメントURL', '文書ハッシュ', '締結証明書番号', '結果']);
+      }
+      sh.appendRow([
+        new Date(), ev.event || '', ev.email || '', ev.name || '',
+        ev.docUrl || '', ev.docHash || '', ev.certNo || '', ev.result || ''
       ]);
     } catch (e) {
-      Log.error('監査証跡記録失敗', { rowIndex: rowIndex, error: String(e) });
+      Log.error('監査シート記録失敗', { error: String(e) });
     }
   }
-
   return { record: record };
 })();

@@ -1,10 +1,10 @@
 /**
  * SignatureService.gs
- * 署名確定処理: ハッシュ算出 → 事業者署名(署名情報の刻印) → 締結証明書生成 →
- * 署名済PDFの保存 → ステータス更新 → 通知。
+ * 署名確定: ドキュメントURL + 氏名 + メール から署名済PDFを生成し、
+ * SHA-256ハッシュ・締結証明書を付与、署名済PDFをDrive保管、発行者と署名者へメール送信。
  *
- * 注意: GAS単体ではPKI電子署名(PAdES)やRFC3161タイムスタンプは付与できない。
- * 本実装は「メールOTPによる本人確認 + SHA-256ハッシュ + 監査証跡」で非改ざん性・締結事実を記録する。
+ * 注意: GAS単体ではPKI電子署名(PAdES)や認定タイムスタンプは付与しない。
+ *       本人性はGoogleサインイン、非改ざん性はSHA-256ハッシュ+締結証明書で担保する中間水準。
  */
 var SignatureService = (function () {
   function bytesToHex(bytes) {
@@ -13,134 +13,89 @@ var SignatureService = (function () {
       return v.length === 1 ? '0' + v : v;
     }).join('');
   }
-
   function computeHash(blob) {
-    var digest = Utilities.computeDigest(
-      Utilities.DigestAlgorithm.SHA_256, blob.getBytes());
-    return bytesToHex(digest);
+    return bytesToHex(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, blob.getBytes()));
   }
-
   function newCertNo() {
-    return 'CERT-' + Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMdd') +
+    return 'CERT-' + Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyyMMdd') +
       '-' + Utilities.getUuid().slice(0, 8).toUpperCase();
+  }
+  function today() {
+    return Utilities.formatDate(new Date(), CONFIG.TZ, CONFIG.DATE_FMT);
   }
 
   /**
-   * 署名を確定する。
-   * @param {number} rowIndex
-   * @param {Object} meta {ip, ua}
-   * @return {{ok:boolean, signedPdfId?:string, certNo?:string, error?:string}}
+   * @param {Object} req {docUrl, name, email}
+   * @return {{ok:boolean, certNo?:string, docHash?:string, error?:string}}
    */
-  function sign(rowIndex, meta) {
+  function sign(req) {
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
+    var tempDocId = null;
     try {
-      var row = SheetService.getRow(rowIndex);
-      if (row.status === CONFIG.STATUS.COMPLETED) {
-        return { ok: true, signedPdfId: row.signedPdfId, certNo: row.certNo };
-      }
-      if (!row.docId) throw new Error('生成Docが見つかりません');
-
+      Props.validate();
+      var docId = DocumentService.extractDocId(req.docUrl);
       var certNo = newCertNo();
-      var ts = TimestampService.apply('');
-      var concludedAt = ts.time;
+      var concludedAt = TimestampService.apply().time;
+      var values = { name: req.name, email: req.email, date: today() };
 
-      // 1) 署名情報をドキュメントへ刻印
-      DocumentService.stampSignature(row.docId, {
-        name: row.name,
-        email: row.email,
-        concludedAt: concludedAt,
-        certNo: certNo,
-        docHash: '(署名済PDF生成後に確定)',
-        ip: meta.ip || '-'
-      });
+      // 1) 署名済PDFを生成
+      var built = DocumentService.buildSignedPdf(docId, values, { concludedAt: concludedAt, certNo: certNo });
+      tempDocId = built.tempDocId;
+      var docHash = computeHash(built.pdfBlob);
+      var pdfName = '署名済_契約書_' + req.name + '_' + Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyyMMdd_HHmmss') + '.pdf';
+      var pdfBlob = built.pdfBlob.copyBlob().setName(pdfName);
 
-      // 2) 署名済PDFを生成・保存
-      var fileName = '署名済_契約書_' + (row.name || '') + '_' + rowIndex;
-      var signed = PdfService.exportToPdf(row.docId, Props.get('DRIVE_SIGNED_FOLDER_ID'), fileName);
+      // 2) 発行者のDriveに保管
+      var savedId = '';
+      try {
+        var folder = DriveApp.getFolderById(Props.get('DRIVE_SIGNED_FOLDER_ID'));
+        savedId = folder.createFile(pdfBlob.copyBlob().setName(pdfName)).getId();
+      } catch (e) {
+        Log.error('署名済PDFのDrive保管に失敗', { error: String(e) });
+      }
 
-      // 3) 署名済PDFのハッシュを算出(非改ざん性の証跡)
-      var docHash = computeHash(signed.blob);
+      // 3) 締結証明・監査
+      var certText = buildCertificate(values, { certNo: certNo, concludedAt: concludedAt, docHash: docHash, docUrl: req.docUrl });
 
-      // 4) 締結証明書PDFを生成しDrive保存
-      var cert = buildCertificate(row, {
+      // 4) 発行者と署名者の両方へPDFメール送信
+      NotificationService.sendSignedToBoth({
+        name: req.name, signerEmail: req.email,
         certNo: certNo, concludedAt: concludedAt, docHash: docHash,
-        ip: meta.ip, ua: meta.ua, tsType: ts.type
-      });
-      var certFileId = saveCertificate(cert.name, cert.text);
-      Log.info('締結証明書PDFを保存', { rowIndex: rowIndex, certFileId: certFileId });
-
-      // 5) 記録
-      SheetService.update(rowIndex, CONFIG.STATUS.COMPLETED, {
-        SIGNED_PDF_ID: signed.id,
-        DOC_HASH: docHash,
-        CONCLUDED_AT: concludedAt,
-        SIGNER_IP: meta.ip || '',
-        SIGNER_UA: meta.ua || '',
-        CERT_NO: certNo
-      });
-      AuditService.record(rowIndex, {
-        event: '締結完了', email: row.email, ip: meta.ip, ua: meta.ua,
-        result: 'OK', docHash: docHash, certNo: certNo
+        pdfBlob: pdfBlob, certText: certText
       });
 
-      // 6) 通知
-      NotificationService.notifyCompleted(SheetService.getRow(rowIndex));
+      AuditService.record({
+        event: '締結完了', email: req.email, name: req.name,
+        docUrl: req.docUrl, docHash: docHash, certNo: certNo, result: 'OK'
+      });
 
-      return { ok: true, signedPdfId: signed.id, certNo: certNo, docHash: docHash };
+      return { ok: true, certNo: certNo, docHash: docHash, savedId: savedId };
     } catch (err) {
-      Log.error('署名確定失敗', { rowIndex: rowIndex, error: String(err) });
-      SheetService.setCell(rowIndex, CONFIG.COL.ERROR, String(err));
+      Log.error('署名確定失敗', { error: String(err) });
+      AuditService.record({ event: '締結失敗', email: req && req.email, name: req && req.name, result: String(err) });
       return { ok: false, error: String(err) };
     } finally {
+      if (tempDocId) DocumentService.trashTemp(tempDocId);
       lock.releaseLock();
     }
   }
 
-  /** 締結証明書(合意締結証明)テキストを組み立てる。 */
-  function buildCertificate(row, s) {
-    var lines = [
-      '════════════════ 合意締結証明書 ════════════════',
+  function buildCertificate(values, s) {
+    return [
+      '════════════ 合意締結証明書 ════════════',
       '締結証明書番号 : ' + s.certNo,
-      '契約種別       : ' + (row.type || '-'),
-      '署名者         : ' + row.name + '（' + row.email + '）',
-      '本人確認方式   : メールOTP認証（立会人型 / 事業者署名型）',
-      '締結日時       : ' + s.concludedAt + '（時刻種別: ' + s.tsType + '）',
-      '署名者IP       : ' + (s.ip || '-'),
-      '署名者UA       : ' + (s.ua || '-'),
+      '署名者         : ' + values.name + '（' + values.email + '）',
+      '本人確認方式   : Googleアカウントによるサインイン',
+      '締結日時       : ' + s.concludedAt,
+      '対象ドキュメント : ' + s.docUrl,
       '文書ハッシュ   : SHA-256 = ' + s.docHash,
       '',
-      '本証明書は、上記署名者がメールOTPによる本人確認を経て、',
+      '本証明書は、上記署名者がGoogleサインインにより本人確認を経て、',
       '当該文書へ電子的に同意・署名した事実を記録するものです。',
-      '文書ハッシュにより、署名後の非改ざん性を検証できます。',
-      '════════════════════════════════════════════════'
-    ];
-    return {
-      name: '締結証明書_' + s.certNo + '_' + (row.name || ''),
-      text: lines.join('\n')
-    };
-  }
-
-  /**
-   * 締結証明書をPDFで生成し署名済フォルダへ保存する。
-   * 一時ドキュメントを作成→PDF化→一時ドキュメントは破棄する。
-   * @return {string} 保存したPDFファイルのID
-   */
-  function saveCertificate(name, text) {
-    var folder = DriveApp.getFolderById(Props.get('DRIVE_SIGNED_FOLDER_ID'));
-    var tmp = DocumentApp.create(name);
-    var body = tmp.getBody();
-    body.setText(text);
-    // 罫線・ハッシュの桁揃えのため等幅フォントを適用
-    body.editAsText().setFontFamily('Courier New').setFontSize(10);
-    tmp.saveAndClose();
-
-    var tmpFile = DriveApp.getFileById(tmp.getId());
-    Utilities.sleep(500);
-    var pdf = tmpFile.getAs('application/pdf').setName(name + '.pdf');
-    var saved = folder.createFile(pdf);
-    tmpFile.setTrashed(true); // 一時ドキュメントを破棄
-    return saved.getId();
+      '文書ハッシュにより署名後の非改ざん性を検証できます。',
+      '══════════════════════════════════════'
+    ].join('\n');
   }
 
   return { sign: sign, computeHash: computeHash, buildCertificate: buildCertificate };
