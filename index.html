@@ -16,7 +16,6 @@
   .err { background:#fdecec; color:#b3261e; padding:10px 12px; border-radius:8px; margin:12px 0; font-size:14px; display:none; }
   label { display:block; margin:14px 0 4px; font-weight:600; font-size:14px; }
   input[type=text], input[type=email] { width:100%; padding:11px; font-size:15px; border:1px solid #ccc; border-radius:8px; }
-  .contract { white-space:pre-wrap; border:1px solid #e0e0e0; border-radius:8px; padding:16px; max-height:360px; overflow:auto; background:#fafafa; font-size:14px; line-height:1.8; margin-top:8px; }
   .agree { display:flex; align-items:flex-start; gap:8px; margin:18px 0; font-size:14px; }
   button { width:100%; padding:14px; font-size:16px; font-weight:700; color:#fff; background:var(--accent); border:0; border-radius:8px; cursor:pointer; margin-top:8px; }
   button:hover { background:#1666cf; }
@@ -25,9 +24,10 @@
   button.secondary:hover { background:#e0e0e0; }
   .note { font-size:12px; color:#888; margin-top:16px; }
   .summary { font-size:13px; color:#444; background:#f0f4ff; border-radius:8px; padding:10px 12px; }
+  .doclink { display:inline-block; margin:10px 0; font-size:15px; color:var(--accent); font-weight:600; text-decoration:none; }
+  .doclink:hover { text-decoration:underline; }
   .done { text-align:center; padding:8px 0; }
   .done .check { font-size:44px; color:#188038; }
-  .kv { font-size:13px; color:#444; background:#fafafa; border:1px solid #eee; border-radius:8px; padding:12px; margin-top:12px; word-break:break-all; }
   .spin { display:none; text-align:center; color:#666; font-size:14px; margin-top:12px; }
   .hidden { display:none; }
 </style>
@@ -36,7 +36,6 @@
 <div class="wrap">
   <div class="card">
     <h1>契約書 電子署名</h1>
-
     <div id="err" class="err"></div>
 
     <!-- STEP 1: 入力 -->
@@ -48,14 +47,15 @@
       <input type="text" id="name" placeholder="山田 太郎">
       <label for="email">メールアドレス（署名済PDFの送付先）</label>
       <input type="email" id="email" placeholder="you@example.com">
-      <button id="btn-preview">内容を確認する</button>
-      <p class="note">次の画面で契約本文を確認し、同意のうえ署名します。</p>
+      <button id="btn-next">契約内容を確認して進む</button>
+      <p class="note">「進む」を押すと、契約書ドキュメントが別タブで開きます。内容をご確認のうえ、次の画面で署名します。</p>
     </section>
 
-    <!-- STEP 2: 確認 -->
+    <!-- STEP 2: 確認して署名 -->
     <section id="step-review" class="hidden">
       <div class="summary" id="review-summary"></div>
-      <div class="contract" id="review-contract"></div>
+      <p style="margin-top:14px">下記のリンクから契約書の内容を必ずご確認ください。</p>
+      <a id="doc-open" class="doclink" href="#" target="_blank" rel="noopener">▶ 契約書を開いて確認する</a>
       <label class="agree"><input type="checkbox" id="agree"><span>上記の契約内容を確認し、これに同意して電子署名します。</span></label>
       <button id="btn-sign">同意して署名する</button>
       <button class="secondary" id="btn-back">入力に戻る</button>
@@ -66,23 +66,22 @@
     <section id="step-done" class="hidden">
       <div class="done">
         <div class="check">&#10004;</div>
-        <h1>締結が完了しました</h1>
+        <h1>署名を受け付けました</h1>
         <p class="muted" id="done-name"></p>
       </div>
-      <div class="kv" id="done-kv"></div>
-      <p class="note">署名済PDFを発行者とあなたのメールアドレスへ送信しました。ご確認ください。</p>
+      <p style="margin-top:14px">署名済PDFを、発行者とあなたのメールアドレス宛てに送信します。数分以内に届かない場合は、お手数ですが発行者へご連絡ください。</p>
     </section>
 
-    <div id="spin" class="spin">処理中です。しばらくお待ちください…</div>
+    <div id="spin" class="spin">署名を送信しています。しばらくお待ちください…</div>
   </div>
 </div>
 
 <script>
-// ===== 設定：GASウェブアプリ(exec)のURL。デプロイ後に差し替え =====
+// ===== GASウェブアプリ(exec)のURL =====
 var GAS_URL = "https://script.google.com/macros/s/AKfycbzvXXEqOwwG80-Kvsx6DdNtMD9fw7Mza3QLQ2MROSIRY_HLr701xiDIxfaNUP69eajI/exec";
 
 var $ = function (id) { return document.getElementById(id); };
-var state = { docUrl:"", name:"", email:"", contractText:"" };
+var state = { docUrl:"", name:"", email:"" };
 
 function showErr(msg) { var e=$("err"); e.textContent=msg; e.style.display = msg ? "block" : "none"; }
 function show(step) {
@@ -90,40 +89,26 @@ function show(step) {
   $(step).classList.remove("hidden");
 }
 function busy(on) { $("spin").style.display = on ? "block" : "none"; }
-
-function jsonp(params) {
-  return new Promise(function (resolve, reject) {
-    var cb = "cb_" + Math.random().toString(36).slice(2);
-    var s = document.createElement("script");
-    var timer = setTimeout(function(){ cleanup(); reject(new Error("タイムアウトしました。時間をおいて再度お試しください。")); }, 90000);
-    function cleanup(){ clearTimeout(timer); try{ delete window[cb]; }catch(e){ window[cb]=undefined; } if (s.parentNode) s.parentNode.removeChild(s); }
-    window[cb] = function (data) { cleanup(); resolve(data); };
-    var qs = Object.keys(params).map(function(k){ return encodeURIComponent(k)+"="+encodeURIComponent(params[k]); }).join("&");
-    s.src = GAS_URL + "?" + qs + "&callback=" + cb;
-    s.onerror = function(){ cleanup(); reject(new Error("通信に失敗しました。ネットワークをご確認ください。")); };
-    document.body.appendChild(s);
-  });
+function valid() {
+  if (!state.docUrl) return "契約書ドキュメントのURLを入力してください。";
+  if (!/[-\w]{25,}/.test(state.docUrl)) return "有効なGoogleドキュメントのURLを入力してください。";
+  if (!state.name) return "お名前を入力してください。";
+  if (!state.email || state.email.indexOf("@") === -1) return "メールアドレスを入力してください。";
+  return "";
 }
 
-$("btn-preview").addEventListener("click", function () {
+$("btn-next").addEventListener("click", function () {
   showErr("");
   state.docUrl = $("docUrl").value.trim();
   state.name = $("name").value.trim();
   state.email = $("email").value.trim();
-  if (!state.docUrl || !state.name || !state.email) { showErr("すべての項目を入力してください。"); return; }
-  busy(true); this.disabled = true;
-  var btn = this;
-  jsonp({ action:"preview", docUrl:state.docUrl, name:state.name, email:state.email })
-    .then(function (r) {
-      busy(false); btn.disabled = false;
-      if (!r || !r.ok) { showErr((r && r.error) || "内容を取得できませんでした。"); return; }
-      state.contractText = r.contractText || "";
-      $("review-summary").textContent = "署名者: " + state.name + "（" + state.email + "）";
-      $("review-contract").textContent = state.contractText;
-      $("agree").checked = false;
-      show("step-review");
-    })
-    .catch(function (e) { busy(false); btn.disabled = false; showErr(e.message); });
+  var v = valid();
+  if (v) { showErr(v); return; }
+  $("review-summary").textContent = "署名者: " + state.name + "（" + state.email + "）";
+  $("doc-open").href = state.docUrl;
+  $("agree").checked = false;
+  window.open(state.docUrl, "_blank", "noopener");
+  show("step-review");
 });
 
 $("btn-back").addEventListener("click", function () { showErr(""); show("step-input"); });
@@ -133,18 +118,23 @@ $("btn-sign").addEventListener("click", function () {
   if (!$("agree").checked) { showErr("「同意します」にチェックしてください。"); return; }
   busy(true); this.disabled = true;
   var btn = this;
-  jsonp({ action:"sign", docUrl:state.docUrl, name:state.name, email:state.email, agree:"true" })
-    .then(function (r) {
-      busy(false); btn.disabled = false;
-      if (!r || !r.ok) { showErr((r && r.error) || "署名処理に失敗しました。"); return; }
+  var qs = "action=sign"
+    + "&docUrl=" + encodeURIComponent(state.docUrl)
+    + "&name=" + encodeURIComponent(state.name)
+    + "&email=" + encodeURIComponent(state.email)
+    + "&agree=true";
+  // cookieを送らない(credentials:omit)ことで、複数Googleアカウント同時ログインでも確実に到達する。
+  // no-corsのためレスポンスは読めないが、サーバ側で署名処理を行いPDFをメール送信する。
+  fetch(GAS_URL + "?" + qs, { method: "GET", mode: "no-cors", credentials: "omit" })
+    .then(function () {
+      busy(false);
       $("done-name").textContent = state.name + " 様";
-      var kv = "";
-      if (r.certNo) kv += "締結証明書番号: " + r.certNo + "\n";
-      if (r.docHash) kv += "文書ハッシュ(SHA-256): " + r.docHash;
-      $("done-kv").textContent = kv;
       show("step-done");
     })
-    .catch(function (e) { busy(false); btn.disabled = false; showErr(e.message); });
+    .catch(function () {
+      busy(false); btn.disabled = false;
+      showErr("送信に失敗しました。通信環境をご確認のうえ、もう一度お試しください。");
+    });
 });
 </script>
 </body>
